@@ -63,6 +63,7 @@ The `batchedNMSPlugin` is created using `BatchedNMSPluginCreator` with `NMSParam
 |`float`   |`scoreThreshold`          |The scalar threshold for score (low scoring boxes are removed).
 |`float`   |`iouThreshold`            |The scalar threshold for IOU (new boxes that have high IOU overlap with previously selected boxes are removed).
 |`bool`    |`isNormalized`            |Set to `false` if the box coordinates are not normalized, meaning they are not in the range `[0,1]`. Defaults to `true`.
+|`bool`    |`clipBoxes`               |Forcibly restrict bounding boxes to the normalized range `[0,1]`. Only applicable if `isNormalized` is also `true`. Defaults to `true`.
 
 
 ## Algorithms
@@ -110,4 +111,5 @@ This is the first release of this `README.md` file.
 
 ## Known issues
 
-When running `cub::DeviceSegmentedRadixSort::SortPairsDescending` with `cuda-memcheck --tool racecheck`, it will not work correctly.
+- When running `cub::DeviceSegmentedRadixSort::SortPairsDescending` with `cuda-memcheck --tool racecheck`, it will not work correctly.
+- BatchedNMS plugin cannot handle greater than 4096 rectangles in the input.

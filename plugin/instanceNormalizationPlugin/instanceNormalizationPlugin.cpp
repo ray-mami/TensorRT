@@ -86,13 +86,23 @@ namespace {
 PluginFieldCollection InstanceNormalizationPluginCreator::mFC{};
 std::vector<PluginField> InstanceNormalizationPluginCreator::mPluginAttributes;
 
+
+InstanceNormalizationPlugin::InstanceNormalizationPlugin(
+    float epsilon, const std::vector<float>& scale, const std::vector<float>& bias)
+    : _epsilon(epsilon)
+    , _nchan(scale.size())
+    , _h_scale(scale)
+    , _h_bias(bias)
+    , _initialized(false)
+{
+    ASSERT(scale.size() == bias.size());
+}
+
 InstanceNormalizationPlugin::InstanceNormalizationPlugin(
     float epsilon, nvinfer1::Weights const& scale, nvinfer1::Weights const& bias)
     : _epsilon(epsilon)
     , _nchan(scale.count)
     , _initialized(false)
-    , _scale(scale)
-    , _bias(bias)
 {
     ASSERT(scale.count == bias.count);
     if (scale.type == nvinfer1::DataType::kFLOAT)
@@ -160,6 +170,10 @@ DimsExprs InstanceNormalizationPlugin::getOutputDimensions(
 int InstanceNormalizationPlugin::initialize()
 {
     _initialized = true;
+    CHECK_CUDNN(cudnnCreate(&_cudnn_handle));
+    CHECK_CUDNN(cudnnCreateTensorDescriptor(&_b_desc));
+    CHECK_CUDNN(cudnnCreateTensorDescriptor(&_x_desc));
+    CHECK_CUDNN(cudnnCreateTensorDescriptor(&_y_desc));
     return 0;
 }
 
@@ -172,8 +186,6 @@ void InstanceNormalizationPlugin::terminate()
     cudnnDestroyTensorDescriptor(_y_desc);
     cudnnDestroyTensorDescriptor(_x_desc);
     cudnnDestroyTensorDescriptor(_b_desc);
-    cudaFree(_d_bias);
-    cudaFree(_d_scale);
     cudnnDestroy(_cudnn_handle);
     _initialized = false;
 }
@@ -204,10 +216,6 @@ int InstanceNormalizationPlugin::enqueue(const nvinfer1::PluginTensorDesc* input
         CHECK_CUDA(cudaMemcpy(_d_scale + i * c, _h_scale.data(), nchan_bytes, cudaMemcpyHostToDevice));
         CHECK_CUDA(cudaMemcpy(_d_bias + i * c, _h_bias.data(), nchan_bytes, cudaMemcpyHostToDevice));
     }
-    CHECK_CUDNN(cudnnCreate(&_cudnn_handle));
-    CHECK_CUDNN(cudnnCreateTensorDescriptor(&_b_desc));
-    CHECK_CUDNN(cudnnCreateTensorDescriptor(&_x_desc));
-    CHECK_CUDNN(cudnnCreateTensorDescriptor(&_y_desc));
 
     CHECK_CUDNN(cudnnSetTensor4dDescriptor(_b_desc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, 1, n * c, 1, 1));
     cudnnDataType_t cudnn_dtype;
@@ -225,6 +233,8 @@ int InstanceNormalizationPlugin::enqueue(const nvinfer1::PluginTensorDesc* input
     //       acceptable.
     CHECK_CUDNN(cudnnBatchNormalizationForwardTraining(_cudnn_handle, CUDNN_BATCHNORM_SPATIAL_PERSISTENT, &alpha, &beta,
         _x_desc, x_ptr, _y_desc, y_ptr, _b_desc, _d_scale, _d_bias, 1., nullptr, nullptr, _epsilon, nullptr, nullptr));
+    cudaFree(_d_bias);
+    cudaFree(_d_scale);
     return 0;
 }
 
@@ -249,7 +259,7 @@ bool InstanceNormalizationPlugin::supportsFormatCombination(
 {
     ASSERT(inOut && pos < (nbInputs + nbOutputs));
     return ((inOut[pos].type == nvinfer1::DataType::kFLOAT || inOut[pos].type == nvinfer1::DataType::kHALF)
-        && inOut[pos].format == nvinfer1::PluginFormat::kNCHW);
+        && inOut[pos].format == nvinfer1::PluginFormat::kNCHW && inOut[pos].type == inOut[0].type);
 }
 
 const char* InstanceNormalizationPlugin::getPluginType() const
@@ -269,7 +279,9 @@ void InstanceNormalizationPlugin::destroy()
 
 IPluginV2DynamicExt* InstanceNormalizationPlugin::clone() const
 { 
-    return new InstanceNormalizationPlugin{_epsilon, _scale, _bias}; 
+    auto plugin = new InstanceNormalizationPlugin{_epsilon, _h_scale, _h_bias};
+    plugin->setPluginNamespace(mPluginNamespace);
+    return plugin;
 }
 
 // Set plugin namespace
@@ -385,7 +397,6 @@ IPluginV2DynamicExt* InstanceNormalizationPluginCreator::createPlugin(const char
     return obj;
 }
 
-// TO TEST:
 IPluginV2DynamicExt* InstanceNormalizationPluginCreator::deserializePlugin(const char* name, const void* serialData, size_t serialLength)
 {
     InstanceNormalizationPlugin* obj = new InstanceNormalizationPlugin{serialData, serialLength}; 
